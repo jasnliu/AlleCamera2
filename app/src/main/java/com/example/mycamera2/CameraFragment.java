@@ -1,6 +1,8 @@
 package com.example.mycamera2;
 
 import android.Manifest;
+import android.content.Context;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Color;
@@ -19,7 +21,6 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import androidx.camera.core.Camera;
 import androidx.camera.core.CameraSelector;
 import androidx.camera.core.ImageCapture;
 import androidx.camera.core.ImageCaptureException;
@@ -32,15 +33,18 @@ import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
 import androidx.lifecycle.LifecycleOwner;
 
-import com.google.android.gms.tasks.OnFailureListener;
-import com.google.android.gms.tasks.OnSuccessListener;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.mlkit.nl.translate.Translator;
 import com.google.mlkit.vision.common.InputImage;
-import com.google.mlkit.vision.text.Text;
 import com.google.mlkit.vision.text.TextRecognition;
 import com.google.mlkit.vision.text.TextRecognizer;
-// import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions; // Using default for now as per user code
 
+import java.lang.Character; // Added for UnicodeBlock
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 
 public class CameraFragment extends Fragment {
@@ -51,8 +55,20 @@ public class CameraFragment extends Fragment {
     private ImageCapture imageCapture;
     private ImageButton captureButton;
 
+    private static final String PREFS_NAME = "AllergyPrefs";
+    private static final String KEY_ALLERGIES = "allergies";
+    private List<String> defaultAllergies;
+    private Translator chineseToEnglishTranslator; // Added
+
+
     public CameraFragment() {
         // Required empty public constructor
+    }
+
+    @Override
+    public void onCreate(@Nullable Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        defaultAllergies = new ArrayList<>(Arrays.asList("almond", "pistachio", "peanut", "fish", "pecan"));
     }
 
     @Override
@@ -70,22 +86,16 @@ public class CameraFragment extends Fragment {
         ocrTextView = view.findViewById(R.id.ocrTextView);
         captureButton = view.findViewById(R.id.captureButton);
 
-        // Make sure the PreviewView itself doesn’t steal clicks:
         if (previewView != null) {
             previewView.setClickable(false);
             previewView.setFocusable(false);
         } else {
             Log.e("CameraFragment", "PreviewView is null in onViewCreated");
-            // Optionally show a toast or handle error
         }
-
 
         if (captureButton != null) {
             captureButton.setOnClickListener(v -> {
-                // 1. Play click sound
                 v.playSoundEffect(SoundEffectConstants.CLICK);
-
-                // 2. Animate button (scale down then back up)
                 v.animate()
                         .scaleX(0.85f)
                         .scaleY(0.85f)
@@ -98,15 +108,29 @@ public class CameraFragment extends Fragment {
                                     .start();
                         })
                         .start();
-
-                // 3. Run OCR capture logic
                 capturePhotoAndRunOCR();
             });
         } else {
-             Log.e("CameraFragment", "CaptureButton is null in onViewCreated");
+            Log.e("CameraFragment", "CaptureButton is null in onViewCreated");
         }
 
         requestCameraPermission();
+
+        // Get the translator from MainActivity
+        if (getActivity() instanceof MainActivity) {
+            chineseToEnglishTranslator = ((MainActivity) getActivity()).getChineseToEnglishTranslator();
+            if (chineseToEnglishTranslator == null) {
+                Log.e("CameraFragment", "Translator is null. Check MainActivity initialization.");
+                if (getContext() != null) {
+                    Toast.makeText(getContext(), "Translator service not available.", Toast.LENGTH_LONG).show();
+                }
+            }
+        } else {
+            Log.e("CameraFragment", "Parent activity is not MainActivity or is null, cannot get translator.");
+             if (getContext() != null) {
+                Toast.makeText(getContext(), "Translator setup error.", Toast.LENGTH_LONG).show();
+            }
+        }
     }
 
     private void requestCameraPermission() {
@@ -122,12 +146,10 @@ public class CameraFragment extends Fragment {
     }
 
     private void startCamera() {
-        // Initial check: Ensure fragment is in a good state before starting camera setup.
         if (!isAdded() || getView() == null || getContext() == null) {
-            Log.w("CameraFragment", "startCamera: Aborting, Fragment not in a valid state (not added, view or context is null).");
+            Log.w("CameraFragment", "startCamera: Aborting, Fragment not in a valid state.");
             return;
         }
-        // Also check if the Fragment's main lifecycle is already destroyed.
         if (getLifecycle().getCurrentState() == androidx.lifecycle.Lifecycle.State.DESTROYED) {
             Log.w("CameraFragment", "startCamera: Aborting, Fragment lifecycle is already DESTROYED.");
             return;
@@ -138,27 +160,23 @@ public class CameraFragment extends Fragment {
 
         cameraProviderFuture.addListener(() -> {
             try {
-                // Critical check: Ensure fragment and its view are still valid *inside* the listener.
                 if (!isAdded() || getView() == null || getContext() == null) {
-                    Log.w("CameraFragment", "startCamera listener: Aborting, Fragment became invalid (not added, view or context is null).");
+                    Log.w("CameraFragment", "startCamera listener: Aborting, Fragment became invalid.");
                     return;
                 }
-
-                // Attempt to get the ViewLifecycleOwner and immediately check its state.
-                LifecycleOwner viewLifecycleOwner = getViewLifecycleOwner(); // This is the call that can throw.
+                LifecycleOwner viewLifecycleOwner = getViewLifecycleOwner();
                 if (viewLifecycleOwner.getLifecycle().getCurrentState() == androidx.lifecycle.Lifecycle.State.DESTROYED) {
                     Log.w("CameraFragment", "startCamera listener: Aborting, View lifecycle is DESTROYED.");
                     return;
                 }
 
                 ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
-
                 Preview preview = new Preview.Builder().build();
                 if (previewView != null) {
                     preview.setSurfaceProvider(previewView.getSurfaceProvider());
                 } else {
                     Log.e("CameraFragment", "startCamera listener: PreviewView is null.");
-                    if (isAdded() && getContext() != null) { // Check before Toast
+                    if (isAdded() && getContext() != null) {
                         Toast.makeText(requireContext(), "Error: Preview surface unavailable.", Toast.LENGTH_SHORT).show();
                     }
                     return;
@@ -168,23 +186,21 @@ public class CameraFragment extends Fragment {
                 CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
 
                 cameraProvider.unbindAll();
-                // Use the validated viewLifecycleOwner.
                 cameraProvider.bindToLifecycle(viewLifecycleOwner, cameraSelector, preview, imageCapture);
                 Log.d("CameraFragment", "Camera bound to lifecycle successfully.");
 
             } catch (IllegalStateException e) {
-                // Specifically catch issues from getViewLifecycleOwner() or other lifecycle violations.
-                Log.e("CameraFragment", "startCamera listener: IllegalStateException during camera setup. Message: " + e.getMessage(), e);
+                Log.e("CameraFragment", "startCamera listener: IllegalStateException: " + e.getMessage(), e);
                 if (isAdded() && getContext() != null) {
                     Toast.makeText(requireContext(), "Error configuring camera lifecycle.", Toast.LENGTH_SHORT).show();
                 }
             } catch (ExecutionException | InterruptedException e) {
-                Log.e("CameraFragment", "startCamera listener: Error with CameraProvider future. Message: " + e.getMessage(), e);
+                Log.e("CameraFragment", "startCamera listener: Error with CameraProvider: " + e.getMessage(), e);
                 if (isAdded() && getContext() != null) {
                     Toast.makeText(requireContext(), "Could not initialize camera provider.", Toast.LENGTH_SHORT).show();
                 }
-            } catch (Exception e) { // Catch-all for any other unexpected errors during setup.
-                Log.e("CameraFragment", "startCamera listener: Unexpected error during camera setup. Message: " + e.getMessage(), e);
+            } catch (Exception e) {
+                Log.e("CameraFragment", "startCamera listener: Unexpected error: " + e.getMessage(), e);
                 if (isAdded() && getContext() != null) {
                     Toast.makeText(requireContext(), "Unexpected camera error.", Toast.LENGTH_SHORT).show();
                 }
@@ -194,21 +210,19 @@ public class CameraFragment extends Fragment {
 
     private void capturePhotoAndRunOCR() {
         if (imageCapture == null) {
-            Toast.makeText(requireContext(), getString(R.string.image_capture_not_ready), Toast.LENGTH_SHORT).show();
+            if (getContext() != null) { // Check context
+                 Toast.makeText(requireContext(), getString(R.string.image_capture_not_ready), Toast.LENGTH_SHORT).show();
+            }
             return;
         }
 
-        // Take a picture with ImageCapture
         imageCapture.takePicture(
                 ContextCompat.getMainExecutor(requireContext()),
                 new ImageCapture.OnImageCapturedCallback() {
                     @Override
                     public void onCaptureSuccess(@NonNull ImageProxy imageProxy) {
-                        // Convert ImageProxy to Bitmap
                         Bitmap bitmap = ImageUtils.imageProxyToBitmap(imageProxy);
-                        // Important: Close the imageProxy
                         imageProxy.close();
-
                         if (bitmap != null) {
                             runTextRecognition(bitmap);
                         } else {
@@ -219,13 +233,25 @@ public class CameraFragment extends Fragment {
                     @Override
                     public void onError(@NonNull ImageCaptureException exception) {
                         super.onError(exception);
-                        Toast.makeText(requireContext(),
-                                String.format(getString(R.string.capture_failed), exception.getMessage()),
-                                Toast.LENGTH_SHORT).show();
-                         Log.e("CameraFragment", "Capture failed", exception);
+                        if (getContext() != null) { // Check context
+                            Toast.makeText(requireContext(),
+                                    String.format(getString(R.string.capture_failed), exception.getMessage()),
+                                    Toast.LENGTH_SHORT).show();
+                        }
+                        Log.e("CameraFragment", "Capture failed", exception);
                     }
                 }
         );
+    }
+
+    private List<String> loadKeywordsFromPreferences() {
+        if (getContext() == null) return defaultAllergies; 
+        SharedPreferences sharedPreferences = requireContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        Set<String> savedAllergies = sharedPreferences.getStringSet(KEY_ALLERGIES, null);
+        if (savedAllergies == null) {
+            return defaultAllergies;
+        }
+        return new ArrayList<>(savedAllergies);
     }
 
     private void highlightKeywords(String text) {
@@ -234,11 +260,10 @@ public class CameraFragment extends Fragment {
             return;
         }
         SpannableStringBuilder spannable = new SpannableStringBuilder(text);
-
-        // Keywords to highlight
-        String[] keywords = {"almond", "pistachio", "peanut"}; // Example keywords
+        List<String> keywords = loadKeywordsFromPreferences();
 
         for (String keyword : keywords) {
+            if (keyword == null || keyword.trim().isEmpty()) continue; 
             int index = text.toLowerCase().indexOf(keyword.toLowerCase());
             while (index >= 0) {
                 spannable.setSpan(new ForegroundColorSpan(Color.RED),
@@ -252,22 +277,15 @@ public class CameraFragment extends Fragment {
 
     private void runTextRecognition(Bitmap bitmap) {
         if (ocrTextView == null) {
-            Log.e("CameraFragment", "ocrTextView is null in runTextRecognition, cannot display results.");
-            // Optionally, show a toast to the user
-            // Toast.makeText(requireContext(), "Error: UI element for OCR text not available.", Toast.LENGTH_SHORT).show();
-            // return; // Or decide if you want to proceed with recognition even if UI can't be updated.
+            Log.e("CameraFragment", "ocrTextView is null in runTextRecognition.");
         }
         InputImage image = InputImage.fromBitmap(bitmap, 0);
-        // Using ChineseTextRecognizerOptions as per your provided code snippet
         TextRecognizer recognizer = TextRecognition.getClient(new com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions.Builder().build());
 
         recognizer.process(image)
                 .addOnSuccessListener(visionText -> {
-                    // Check if ocrTextView is still available, especially if operations are long
                     if (ocrTextView != null) {
-                        // If you intend to use the translation flow, call translateChineseToEnglishAndDisplay here
-                        // For now, directly calling highlightKeywords as per your provided code
-                        highlightKeywords(visionText.getText());
+                        translateChineseTextIfPresent(visionText.getText()); // Modified
                     } else {
                         Log.w("CameraFragment", "ocrTextView became null before displaying OCR results.");
                     }
@@ -282,27 +300,59 @@ public class CameraFragment extends Fragment {
                 });
     }
 
+    // New method to translate text if it contains Chinese
+    private void translateChineseTextIfPresent(String originalText) {
+        if (chineseToEnglishTranslator == null) {
+            Log.w("CameraFragment", "Translator not available, skipping translation.");
+            highlightKeywords(originalText);
+            return;
+        }
+
+        boolean containsChinese = false;
+        if (originalText != null && !originalText.isEmpty()) {
+            for (char c : originalText.toCharArray()) {
+                if (Character.UnicodeBlock.of(c) == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS) {
+                    containsChinese = true;
+                    break;
+                }
+            }
+        }
+
+        if (containsChinese) {
+            chineseToEnglishTranslator.translate(originalText)
+                    .addOnSuccessListener(translatedText -> {
+                        String combinedText = translatedText + "\n\n" + originalText;
+                        highlightKeywords(combinedText);
+                    })
+                    .addOnFailureListener(e -> {
+                        Log.e("CameraFragment", "Translation failed", e);
+                        if (getContext() != null) {
+                            Toast.makeText(getContext(), "Translation failed: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                        }
+                        highlightKeywords(originalText); // Show original text on translation failure
+                    });
+        } else {
+            highlightKeywords(originalText);
+        }
+    }
+
     @Override
     public void onRequestPermissionsResult(int requestCode,
                                            @NonNull String[] permissions,
                                            @NonNull int[] grantResults) {
-        // It's good practice to call super, though for Fragment it might not do much by default.
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_CAMERA_PERMISSION) {
-            if (grantResults.length > 0
-                    && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                // Ensure fragment is still in a valid state to start camera
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 if (isAdded() && getView() != null && getContext() != null) {
                     startCamera();
                 } else {
                     Log.w("CameraFragment", "onRequestPermissionsResult: Cannot start camera, fragment not in valid state.");
-                    // Optionally inform user if context is available
                     if (getContext() != null) {
                         Toast.makeText(requireContext(), "Could not restart camera, please try again.", Toast.LENGTH_SHORT).show();
                     }
                 }
             } else {
-                if (getContext() != null) { // Check context before showing Toast
+                if (getContext() != null) {
                     Toast.makeText(requireContext(), getString(R.string.camera_permission_denied), Toast.LENGTH_LONG).show();
                 }
             }
