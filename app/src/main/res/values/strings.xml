@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">MyCamera2</string>
+    <string name="capture_text">camerabutton</string>
+
+    <string name="title_camera">Camera</string>
+    <string name="title_settings">Settings</string>
+
+    <string name="image_capture_not_ready">ImageCapture not ready</string>
+    <string name="capture_failed">Capture failed: %s</string>
+    <string name="failed_to_recognize_text">Failed to recognize text: %s</string>
+    <string name="camera_permission_denied">Camera permission denied</string>
+</resources>
