@@ -16,12 +16,14 @@ import com.google.mlkit.nl.translate.TranslateLanguage;
 import com.google.mlkit.nl.translate.Translation;
 import com.google.mlkit.nl.translate.Translator;
 import com.google.mlkit.nl.translate.TranslatorOptions;
+import java.util.HashMap;
+import java.util.Map;
 
 public class MainActivity extends AppCompatActivity implements BottomNavigationView.OnNavigationItemSelectedListener {
 
-    // We'll keep the translator here for now, but it might be better placed in CameraFragment
+    // We'll keep the translators here for now, but it might be better placed in CameraFragment
     // if only the camera feature uses translation.
-    private Translator chineseToEnglishTranslator;
+    private Map<String, Translator> translators = new HashMap<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -31,8 +33,8 @@ public class MainActivity extends AppCompatActivity implements BottomNavigationV
         BottomNavigationView bottomNavigationView = findViewById(R.id.bottom_navigation);
         bottomNavigationView.setOnNavigationItemSelectedListener(this);
 
-        // Initialize and download translator model (can be moved if only CameraFragment needs it)
-        initializeTranslator();
+        // Initialize and download translator models (can be moved if only CameraFragment needs it)
+        initializeTranslators();
 
         // Load the default fragment (CameraFragment)
         if (savedInstanceState == null) {
@@ -41,27 +43,42 @@ public class MainActivity extends AppCompatActivity implements BottomNavigationV
         }
     }
 
-    private void initializeTranslator() {
-        TranslatorOptions options =
-                new TranslatorOptions.Builder()
-                        .setSourceLanguage(TranslateLanguage.CHINESE)
-                        .setTargetLanguage(TranslateLanguage.ENGLISH)
-                        .build();
-        chineseToEnglishTranslator = Translation.getClient(options);
+    private void initializeTranslators() {
+        // Initialize translators for different languages
+        String[][] languagePairs = {
+            {"chinese", TranslateLanguage.CHINESE, TranslateLanguage.ENGLISH},
+            {"japanese", TranslateLanguage.JAPANESE, TranslateLanguage.ENGLISH},
+            {"spanish", TranslateLanguage.SPANISH, TranslateLanguage.ENGLISH},
+            {"french", TranslateLanguage.FRENCH, TranslateLanguage.ENGLISH}
+        };
 
         DownloadConditions conditions = new DownloadConditions.Builder()
                 .requireWifi() // Consider making this configurable or prompt user
                 .build();
-        chineseToEnglishTranslator.downloadModelIfNeeded(conditions)
-                .addOnSuccessListener(
-                        v -> Log.d("Translator", "Chinese-English model downloaded."))
-                .addOnFailureListener(
-                        e -> {
-                            Log.e("Translator", "Model download failed: " + e.getMessage());
-                            Toast.makeText(MainActivity.this, "Translator model download failed.", Toast.LENGTH_LONG).show();
-                        });
-        // Manage translator lifecycle
-        getLifecycle().addObserver(chineseToEnglishTranslator);
+
+        for (String[] pair : languagePairs) {
+            String key = pair[0];
+            String sourceLanguage = pair[1];
+            String targetLanguage = pair[2];
+            
+            TranslatorOptions options = new TranslatorOptions.Builder()
+                    .setSourceLanguage(sourceLanguage)
+                    .setTargetLanguage(targetLanguage)
+                    .build();
+            
+            Translator translator = Translation.getClient(options);
+            translators.put(key, translator);
+            
+            translator.downloadModelIfNeeded(conditions)
+                    .addOnSuccessListener(v -> Log.d("Translator", key + "-English model downloaded."))
+                    .addOnFailureListener(e -> {
+                        Log.e("Translator", key + " model download failed: " + e.getMessage());
+                        Toast.makeText(MainActivity.this, key + " translator model download failed.", Toast.LENGTH_LONG).show();
+                    });
+            
+            // Manage translator lifecycle
+            getLifecycle().addObserver(translator);
+        }
     }
 
     private boolean loadFragment(Fragment fragment) {
@@ -99,8 +116,13 @@ public class MainActivity extends AppCompatActivity implements BottomNavigationV
     // - translateChineseToEnglishAndDisplay() // Or keep a reference to translator if initialized here
     // - onRequestPermissionsResult()
 
-    // Getter for the translator if CameraFragment needs it and it's initialized in MainActivity
+    // Getter for the translators if CameraFragment needs them and they're initialized in MainActivity
+    public Map<String, Translator> getTranslators() {
+        return translators;
+    }
+    
+    // Getter for specific translator (backward compatibility)
     public Translator getChineseToEnglishTranslator() {
-        return chineseToEnglishTranslator;
+        return translators.get("chinese");
     }
 }
